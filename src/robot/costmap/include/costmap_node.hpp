@@ -3,8 +3,7 @@
  
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
-#include "sensor_msgs/msg/laser_scan.hpp"
-#include "nav_msgs/msg/occupancy_grid.hpp"
+
  
 #include "costmap_core.hpp"
  
