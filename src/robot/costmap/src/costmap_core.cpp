@@ -37,8 +37,8 @@ void CostmapCore::inflateObstacles() {
   auto inflated = grid_;
   int inflation_radius_cells = static_cast<int>(1.0 / resolution_);
 
-  for (int y = 0; y < height_; y++) {
-    for (int x = 0; x < width_; x++) {
+  for (unsigned int y = 0; y < height_; y++) {
+    for (unsigned int x = 0; x < width_; x++) {
       if (grid_[y][x] == 100) {
         for (int dy = -inflation_radius_cells; dy <= inflation_radius_cells; dy++) {
           for (int dx = -inflation_radius_cells; dx <= inflation_radius_cells; dx++) {

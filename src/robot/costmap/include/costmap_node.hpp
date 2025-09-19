@@ -2,7 +2,6 @@
 #define COSTMAP_NODE_HPP_
  
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/string.hpp"
  
 #include "costmap_core.hpp"
  
@@ -11,7 +10,6 @@ class CostmapNode : public rclcpp::Node {
     CostmapNode();
     
     // Place callback function here
-    void publishMessage();
  
   private:
     // Callbacks
@@ -22,11 +20,9 @@ class CostmapNode : public rclcpp::Node {
     // Publishers / Subscribers
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr lidar_sub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
-    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr string_pub_;
-    rclcpp::TimerBase::SharedPtr timer_;
 
     // Core costmap logic
     robot::CostmapCore costmap_core_;
-}
+};
 
 #endif 
