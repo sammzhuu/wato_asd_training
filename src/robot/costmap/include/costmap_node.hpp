@@ -27,5 +27,6 @@ class CostmapNode : public rclcpp::Node {
 
     // Core costmap logic
     robot::CostmapCore costmap_core_;
- 
+}
+
 #endif 
