@@ -27,14 +27,31 @@ ControlNode::ControlNode(): Node("control"), control_(robot::ControlCore(this->g
 
 
 void ControlNode::controlLoop() {
+    
     // Skip control if no path or odometry data is available
     if (!current_path_ || !robot_odom_) {
+        return;
+    }
+    
+    double dist = computeDistance(robot_odom_->pose.pose.position, current_path_->poses.back().pose.position);
+
+    //checks if robot is close enough to goal
+    if (dist < goal_tolerance_) {
+        //if true, prints message
+        RCLCPP_INFO(this->get_logger(), "Goal reached, stopping robot.");
+        
+        //publishes twist message and stops the robot
+        cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
         return;
     }
 
     // Find the lookahead point
     auto lookahead_point = findLookaheadPoint();
-    if (!lookahead_point) {
+
+    if (dist < lookahead_distance_) {
+        lookahead_point = current_path_->poses.back();
+    }
+    else if (!lookahead_point) {
         return;  // No valid lookahead point found
     }
 
@@ -67,13 +84,10 @@ std::optional<geometry_msgs::msg::PoseStamped> ControlNode::findLookaheadPoint()
     // If none found above threshold, return the final goal if close enough
     auto &last = current_path_->poses.back();
     double final_dist = computeDistance(robot_pose.position, last.pose.position);
-    if (final_dist <= goal_tolerance_) {
-        return last;
-    }
+
     return std::nullopt;
 }
 geometry_msgs::msg::Twist ControlNode::computeVelocity(const geometry_msgs::msg::PoseStamped &target) {
-    // TODO: Implement logic to compute velocity commands
     geometry_msgs::msg::Twist cmd_vel;
 
     // Extract robot’s current pose
@@ -96,19 +110,33 @@ geometry_msgs::msg::Twist ControlNode::computeVelocity(const geometry_msgs::msg:
     while (yaw_error > M_PI) yaw_error -= 2 * M_PI;
     while (yaw_error < -M_PI) yaw_error += 2 * M_PI;
 
-    // Here: simple proportional steering
-    double angular_speed = 2.0 * yaw_error;  // gain of 2.0, tune as needed
+    
 
     // Linear speed could also drop when approaching goal or turning sharply
     double dist = std::sqrt(dx*dx + dy*dy);
-    double linear_speed = linear_speed_; 
-    if (dist < lookahead_distance_) {
-        linear_speed = linear_speed_ * (dist / lookahead_distance_);
+
+    // ----- Stopping condition -----
+    // If close to final goal → stop completely
+    double goal_dist = computeDistance(robot_pose.position, current_path_->poses.back().pose.position);
+    if (goal_dist < goal_tolerance_) {
+        return cmd_vel;  // zero velocity
+    }
+    
+    // Linear speed: proportional to distance, capped at linear_speed_
+    double linear_speed = std::min(linear_speed_, linear_kp * dist);
+
+    // Angular speed: proportional to yaw error
+    double angular_speed = angular_kp * yaw_error;
+
+    // If target is the final goal → stop rotating
+    if (target == current_path_->poses.back()) {
+        angular_speed = 0.0;
     }
 
     cmd_vel.linear.x = linear_speed;
     cmd_vel.angular.z = angular_speed;
 
+    
 
     return cmd_vel;
 }

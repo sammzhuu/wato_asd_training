@@ -33,6 +33,9 @@ class ControlNode : public rclcpp::Node {
     double goal_tolerance_;
     double linear_speed_;
 
+    static constexpr double linear_kp = 1.0;
+    static constexpr double angular_kp = 0.8;
+
     // Control loop
     void controlLoop();
     std::optional<geometry_msgs::msg::PoseStamped> findLookaheadPoint();
