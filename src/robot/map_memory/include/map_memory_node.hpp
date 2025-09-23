@@ -42,8 +42,6 @@ class MapMemoryNode : public rclcpp::Node {
     static constexpr int height_ = 300;
     static constexpr double resolution_ = 0.1; // meters per cell
     const double distance_threshold = 1.5; // meters
-
-
 };
 
 #endif 

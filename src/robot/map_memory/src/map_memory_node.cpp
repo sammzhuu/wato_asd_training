@@ -1,4 +1,5 @@
 #include "map_memory_node.hpp"
+#include <cmath>
 
 MapMemoryNode::MapMemoryNode() : Node("map_memory"), last_x(0.0), last_y(0.0), distance_threshold(1.5), map_memory_(robot::MapMemoryCore(this->get_logger())) {
     costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
@@ -21,7 +22,7 @@ void MapMemoryNode::initializeGlobal(){
     global_map_.info.height = height_; // Example height
     global_map_.info.origin.position.x =  - (width_ / 2) * resolution_;
     global_map_.info.origin.position.y = - (height_ / 2) * resolution_;
-    global_map_.header.frame_id = "sim_world";
+    global_map_.header.frame_id = "robot/chassis/lidar";
     global_map_.data.resize(global_map_.info.width * global_map_.info.height, -1); // Unknown
 }
 
@@ -92,13 +93,8 @@ void MapMemoryNode::integrateCostmap() {
 
     // stamp and frame for publishing
     global_map_.header.stamp = this->get_clock()->now();
-    global_map_.header.frame_id = "map";
+    global_map_.header.frame_id = "robot/chassis/lidar";
 }
-
-
-// Flags
-nav_msgs::msg::OccupancyGrid latest_costmap_;
-bool should_update_map_ = false;
 
 int main(int argc, char ** argv)
 {
