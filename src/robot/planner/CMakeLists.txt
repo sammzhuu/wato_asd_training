@@ -29,6 +29,7 @@ target_include_directories(planner_lib
 # Add ROS2 dependencies required by package
 ament_target_dependencies(planner_lib 
   rclcpp
+  std_msgs
   geometry_msgs
   nav_msgs
 )
