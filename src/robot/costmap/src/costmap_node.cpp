@@ -10,7 +10,6 @@
 CostmapNode::CostmapNode() : Node("costmap"), costmap_core_(this->get_logger(), 0.05, 300, 300) {
 
   lidar_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>("/lidar", 10, std::bind(&CostmapNode::laserCallback, this, std::placeholders::_1));
-
   costmap_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/costmap", 10);
   
 } 
