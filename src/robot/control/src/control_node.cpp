@@ -39,7 +39,6 @@ void ControlNode::controlLoop() {
     if (dist < goal_tolerance_) {
         //if true, prints message
         RCLCPP_INFO(this->get_logger(), "Goal reached, stopping robot.");
-        
         //publishes twist message and stops the robot
         cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
         return;
@@ -51,8 +50,10 @@ void ControlNode::controlLoop() {
     if (dist < lookahead_distance_) {
         lookahead_point = current_path_->poses.back();
     }
-    else if (!lookahead_point) {
-        return;  // No valid lookahead point found
+    else if (!lookahead_point.has_value()) {
+        RCLCPP_WARN(this->get_logger(), "No valid look point found");
+        cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
+        return;
     }
 
     // Compute velocity command
@@ -63,28 +64,12 @@ void ControlNode::controlLoop() {
 }
 
 std::optional<geometry_msgs::msg::PoseStamped> ControlNode::findLookaheadPoint() {
-    if (!current_path_ || current_path_->poses.empty() || !robot_odom_) {
-        return std::nullopt;
-    }
-
-    auto robot_pose = robot_odom_->pose.pose;
-    double robot_x = robot_pose.position.x;
-    double robot_y = robot_pose.position.y;
-
-    // iterate through path to find first point at least lookahead_distance_ away
-    for (const auto &pose_stamped : current_path_->poses) {
-        double px = pose_stamped.pose.position.x;
-        double py = pose_stamped.pose.position.y;
-        double dist = computeDistance(robot_pose.position, pose_stamped.pose.position);
-        if (dist >= lookahead_distance_) {
-            return pose_stamped;
+    for (auto& pose : current_path_->poses) {
+        double distance = computeDistance(robot_odom_->pose.pose.position, pose.pose.position);
+        if (distance >= lookahead_distance_) {
+            return pose;
+            }
         }
-    }
-
-    // If none found above threshold, return the final goal if close enough
-    auto &last = current_path_->poses.back();
-    double final_dist = computeDistance(robot_pose.position, last.pose.position);
-
     return std::nullopt;
 }
 geometry_msgs::msg::Twist ControlNode::computeVelocity(const geometry_msgs::msg::PoseStamped &target) {
@@ -118,25 +103,15 @@ geometry_msgs::msg::Twist ControlNode::computeVelocity(const geometry_msgs::msg:
     // ----- Stopping condition -----
     // If close to final goal → stop completely
     double goal_dist = computeDistance(robot_pose.position, current_path_->poses.back().pose.position);
-    if (goal_dist < goal_tolerance_) {
-        return cmd_vel;  // zero velocity
-    }
     
     // Linear speed: proportional to distance, capped at linear_speed_
     double linear_speed = std::min(linear_speed_, linear_kp * dist);
 
     // Angular speed: proportional to yaw error
-    double angular_speed = angular_kp * yaw_error;
-
-    // If target is the final goal → stop rotating
-    if (target == current_path_->poses.back()) {
-        angular_speed = 0.0;
-    }
+    double angular_speed = target == current_path_->poses.back() ? 0.0 : angular_kp * yaw_error;
 
     cmd_vel.linear.x = linear_speed;
     cmd_vel.angular.z = angular_speed;
-
-    
 
     return cmd_vel;
 }
