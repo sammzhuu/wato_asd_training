@@ -26,7 +26,7 @@ public:
     const nav_msgs::msg::OccupancyGrid & map,
     const geometry_msgs::msg::Pose & start,
     const geometry_msgs::msg::Point & goal,
-    double inflation_radius_m = 0.5);
+    double inflation_radius_m = 0.2);
 
 private:
   rclcpp::Logger logger_;
