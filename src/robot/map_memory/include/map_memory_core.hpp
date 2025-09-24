@@ -10,8 +10,8 @@ class MapMemoryCore {
 public:
     explicit MapMemoryCore(const rclcpp::Logger& logger,
                            double resolution = 0.1,
-                           int width = 600,
-                           int height = 600);
+                           int width = 300,
+                           int height = 300);
 
     void initializeGlobalMap();
     void integrateCostmap(const nav_msgs::msg::OccupancyGrid& local_costmap);
