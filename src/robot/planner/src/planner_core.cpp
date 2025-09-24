@@ -1,71 +1,43 @@
 #include "planner_core.hpp"
-
-#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <queue>
+#include <unordered_map>
 #include <algorithm>
+#include <cmath>
 
 namespace robot
 {
 
 PlannerCore::PlannerCore(const rclcpp::Logger & logger)
-: logger_(logger)
-{
-}
+: logger_(logger) {}
 
-// Octile heuristic for 8-connected grid
-inline double PlannerCore::heuristic_octile(int x1, int y1, int x2, int y2) const
-{
-  double dx = std::abs(x1 - x2);
-  double dy = std::abs(y1 - y2);
-  const double F = std::sqrt(2.0) - 1.0;
-  return (dx < dy) ? (F * dx + dy) : (F * dy + dx);
-}
-
-inline bool PlannerCore::inBounds(int x, int y, int width, int height) const
-{
+bool PlannerCore::inBounds(int x, int y, int width, int height) const {
   return x >= 0 && y >= 0 && x < width && y < height;
 }
 
-inline bool PlannerCore::isCellFree(const std::vector<int8_t> &inflated, int x, int y, int width, int height) const
-{
-  if (!inBounds(x, y, width, height)) return false;
-  return inflated[idx(x, y, width)] == 0;
+double PlannerCore::heuristic_octile(int x1, int y1, int x2, int y2) const {
+  int dx = std::abs(x1 - x2);
+  int dy = std::abs(y1 - y2);
+  return (dx + dy) + (std::sqrt(2.0) - 2) * std::min(dx, dy);
 }
 
-// Build inflated occupancy grid (0 = free, 1 = occupied/inflated)
-void PlannerCore::buildInflatedMap(const nav_msgs::msg::OccupancyGrid &map,
-                                   std::vector<int8_t> &inflated,
-                                   int inflation_cells) const
+void PlannerCore::buildDistanceField(const nav_msgs::msg::OccupancyGrid &map,
+                                     std::vector<int> &dist_field,
+                                     int inflation_cells) const
 {
   int width = map.info.width;
   int height = map.info.height;
-  inflated.assign(width * height, 0);
+  dist_field.assign(width * height, -1);
 
-  // mark original obstacles
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
-      int i = idx(x, y, width);
-      int8_t v = map.data[i];
-      if (v < 0) {
-        // unknown treated as free here; could also be treated as occupied
-        continue;
-      }
-      if (v > 50) { // occupied threshold
-        inflated[i] = 1;
-      }
-    }
-  }
-
-  if (inflation_cells <= 0) return;
-
-  // BFS expansion from obstacles to inflate them
   std::queue<std::pair<int,int>> q;
-  std::vector<int> dist(width * height, -1);
 
+  // mark obstacles with distance 0
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; ++x) {
-      if (inflated[idx(x,y,width)] == 1) {
+      int i = idx(x,y,width);
+      int8_t v = map.data[i];
+      if (v > 50) { // occupied
+        dist_field[i] = 0;
         q.push({x,y});
-        dist[idx(x,y,width)] = 0;
       }
     }
   }
@@ -74,9 +46,8 @@ void PlannerCore::buildInflatedMap(const nav_msgs::msg::OccupancyGrid &map,
   const int dy4[4] = {0,0,1,-1};
 
   while (!q.empty()) {
-    auto p = q.front(); q.pop();
-    int cx = p.first, cy = p.second;
-    int cd = dist[idx(cx,cy,width)];
+    auto [cx, cy] = q.front(); q.pop();
+    int cd = dist_field[idx(cx,cy,width)];
     if (cd >= inflation_cells) continue;
 
     for (int k=0;k<4;++k) {
@@ -84,35 +55,29 @@ void PlannerCore::buildInflatedMap(const nav_msgs::msg::OccupancyGrid &map,
       int ny = cy + dy4[k];
       if (!inBounds(nx, ny, width, height)) continue;
       int ni = idx(nx, ny, width);
-      if (dist[ni] == -1) {
-        dist[ni] = cd + 1;
-        inflated[ni] = 1; // mark inflated
+      if (dist_field[ni] == -1) {
+        dist_field[ni] = cd + 1;
         q.push({nx, ny});
       }
     }
   }
 }
 
-// line-of-sight check (Bresenham sampling) against inflated occupancy
-bool PlannerCore::lineOfSight(const std::vector<int8_t> &inflated, int x0, int y0, int x1, int y1,
-                              int width, int height, const nav_msgs::msg::OccupancyGrid & /*map*/) const
+bool PlannerCore::lineOfSight(const std::vector<int> &dist_field, int x0, int y0, int x1, int y1,
+                              int width, int height, const nav_msgs::msg::OccupancyGrid &map) const
 {
-  // Bresenham integer line
-  int dx = std::abs(x1 - x0);
-  int dy = std::abs(y1 - y0);
+  int dx = std::abs(x1 - x0), dy = std::abs(y1 - y0);
   int sx = (x0 < x1) ? 1 : -1;
   int sy = (y0 < y1) ? 1 : -1;
   int err = dx - dy;
 
-  int x = x0;
-  int y = y0;
   while (true) {
-    if (!inBounds(x, y, width, height)) return false;
-    if (inflated[idx(x,y,width)] != 0) return false; // blocked
-    if (x == x1 && y == y1) break;
+    int i = idx(x0, y0, width);
+    if (dist_field[i] == 0) return false; // lethal obstacle
+    if (x0 == x1 && y0 == y1) break;
     int e2 = 2 * err;
-    if (e2 > -dy) { err -= dy; x += sx; }
-    if (e2 < dx)  { err += dx;  y += sy; }
+    if (e2 > -dy) { err -= dy; x0 += sx; }
+    if (e2 < dx) { err += dx; y0 += sy; }
   }
   return true;
 }
@@ -121,176 +86,120 @@ nav_msgs::msg::Path PlannerCore::plan(
   const nav_msgs::msg::OccupancyGrid & map,
   const geometry_msgs::msg::Pose & start,
   const geometry_msgs::msg::Point & goal,
-  double inflation_radius_m)
+  double inflation_radius_m,
+  double inflation_weight)
 {
   nav_msgs::msg::Path path;
   path.header.frame_id = map.header.frame_id;
   path.header.stamp = rclcpp::Clock().now();
 
-  if (map.data.empty()) {
-    RCLCPP_WARN(logger_, "PlannerCore::plan called with empty map");
-    return path;
-  }
+  int width = map.info.width;
+  int height = map.info.height;
+  double res = map.info.resolution;
 
-  int width = static_cast<int>(map.info.width);
-  int height = static_cast<int>(map.info.height);
-  double resolution = map.info.resolution;
-
-  // Convert world to map coordinates
-  auto worldToMap = [&](double wx, double wy, int &mx, int &my) {
-    mx = static_cast<int>(std::floor((wx - map.info.origin.position.x) / resolution));
-    my = static_cast<int>(std::floor((wy - map.info.origin.position.y) / resolution));
+  // --- Convert to grid indices ---
+  auto toGrid = [&](double wx, double wy) {
+    int gx = static_cast<int>((wx - map.info.origin.position.x) / res);
+    int gy = static_cast<int>((wy - map.info.origin.position.y) / res);
+    return std::make_pair(gx, gy);
   };
 
-  int sx, sy, gx, gy;
-  worldToMap(start.position.x, start.position.y, sx, sy);
-  worldToMap(goal.x, goal.y, gx, gy);
+  auto [sx, sy] = toGrid(start.position.x, start.position.y);
+  auto [gx, gy] = toGrid(goal.x, goal.y);
 
-  if (!inBounds(sx, sy, width, height)) {
-    RCLCPP_WARN(logger_, "Start is out of map bounds: (%d,%d)", sx, sy);
-    return path;
-  }
-  if (!inBounds(gx, gy, width, height)) {
-    RCLCPP_WARN(logger_, "Goal is out of map bounds: (%d,%d)", gx, gy);
+  if (!inBounds(sx, sy, width, height) || !inBounds(gx, gy, width, height)) {
+    RCLCPP_WARN(logger_, "Start or goal outside map bounds");
     return path;
   }
 
-  // Prepare inflated occupancy grid
-  int inflation_cells = static_cast<int>(std::ceil(inflation_radius_m / resolution));
-  std::vector<int8_t> inflated;
-  buildInflatedMap(map, inflated, inflation_cells);
+  // --- Build distance field ---
+  int inflation_cells = static_cast<int>(std::ceil(inflation_radius_m / res));
+  std::vector<int> dist_field;
+  buildDistanceField(map, dist_field, inflation_cells);
 
-  // Reject if start/goal are inside inflated obstacles
-  if (!isCellFree(inflated, sx, sy, width, height)) {
-    RCLCPP_WARN(logger_, "Start lies in an inflated obstacle cell");
-    return path;
-  }
-  if (!isCellFree(inflated, gx, gy, width, height)) {
-    RCLCPP_WARN(logger_, "Goal lies in an inflated obstacle cell");
-    return path;
-  }
-
-  // A* structures
-  const double INF = std::numeric_limits<double>::infinity();
-  std::vector<double> g_score(width * height, INF);
-  std::vector<int> parent(width * height, -1);
-  std::vector<char> closed(width * height, 0);
-
-  // Priority queue: (f, x, y)
-  struct PQ {
-    double f;
+  // --- A* search ---
+  struct Node {
     int x, y;
-    bool operator>(const PQ &o) const { return f > o.f; }
-  };
-  std::priority_queue<PQ, std::vector<PQ>, std::greater<PQ>> open;
-
-  auto push_open = [&](int x, int y, double g) {
-    double h = heuristic_octile(x, y, gx, gy);
-    double f = g + h;
-    open.push({f, x, y});
-    g_score[idx(x,y,width)] = g;
+    double g, f;
+    bool operator>(const Node &other) const { return f > other.f; }
   };
 
-  // init
-  push_open(sx, sy, 0.0);
-  parent[idx(sx,sy,width)] = -1;
+  std::priority_queue<Node, std::vector<Node>, std::greater<Node>> open;
+  std::unordered_map<int, double> g_score;
+  std::unordered_map<int, std::pair<int,int>> came_from;
 
-  const int dx8[8] = {1, 1, 0, -1, -1, -1, 0, 1};
-  const int dy8[8] = {0, 1, 1, 1, 0, -1, -1, -1};
-  const double move_cost[8] = {1.0, std::sqrt(2.0), 1.0, std::sqrt(2.0),
-                               1.0, std::sqrt(2.0), 1.0, std::sqrt(2.0)};
+  int start_i = idx(sx, sy, width);
+  int goal_i = idx(gx, gy, width);
+
+  open.push({sx, sy, 0.0, heuristic_octile(sx, sy, gx, gy)});
+  g_score[start_i] = 0.0;
+
+  const int dx8[8] = {1,-1,0,0, 1,1,-1,-1};
+  const int dy8[8] = {0,0,1,-1, 1,-1,1,-1};
+  const double move_cost[8] = {1,1,1,1, std::sqrt(2),std::sqrt(2),std::sqrt(2),std::sqrt(2)};
+
   bool found = false;
 
   while (!open.empty()) {
-    PQ cur = open.top();
-    open.pop();
+    Node cur = open.top(); open.pop();
+    int ci = idx(cur.x, cur.y, width);
 
-    int cx = cur.x;
-    int cy = cur.y;
-    int cindex = idx(cx, cy, width);
-
-    if (closed[cindex]) continue;
-    closed[cindex] = 1;
-
-    if (cx == gx && cy == gy) {
+    if (ci == goal_i) {
       found = true;
       break;
     }
 
-    double cg = g_score[cindex];
-
-    for (int k = 0; k < 8; ++k) {
-      int nx = cx + dx8[k];
-      int ny = cy + dy8[k];
+    for (int k=0;k<8;++k) {
+      int nx = cur.x + dx8[k];
+      int ny = cur.y + dy8[k];
       if (!inBounds(nx, ny, width, height)) continue;
-      if (!isCellFree(inflated, nx, ny, width, height)) continue;
+      int ni = idx(nx, ny, width);
 
-      double tentative_g = cg + move_cost[k];
+      // skip lethal obstacle
+      if (dist_field[ni] == 0) continue;
 
-      int nidx = idx(nx, ny, width);
-      if (tentative_g < g_score[nidx]) {
-        g_score[nidx] = tentative_g;
-        parent[nidx] = cindex;
-        double h = heuristic_octile(nx, ny, gx, gy);
-        double f = tentative_g + h;
-        open.push({f, nx, ny});
+      // base cost
+      double tentative_g = g_score[ci] + move_cost[k];
+
+      // add penalty for being near obstacles
+      if (dist_field[ni] > 0) {
+        double penalty = (inflation_cells - dist_field[ni] + 1) * inflation_weight;
+        tentative_g += penalty;
+      }
+
+      if (!g_score.count(ni) || tentative_g < g_score[ni]) {
+        g_score[ni] = tentative_g;
+        came_from[ni] = {cur.x, cur.y};
+        double f = tentative_g + heuristic_octile(nx, ny, gx, gy);
+        open.push({nx, ny, tentative_g, f});
       }
     }
   }
 
   if (!found) {
-    RCLCPP_WARN(logger_, "PlannerCore::plan - no path found");
+    RCLCPP_WARN(logger_, "Failed to find path");
     return path;
   }
 
-  // reconstruct raw grid path
-  std::vector<int> grid_path;
-  int cur = idx(gx, gy, width);
-  while (cur != -1) {
-    grid_path.push_back(cur);
-    cur = parent[cur];
+  // --- Reconstruct path ---
+  std::vector<std::pair<int,int>> rev_cells;
+  int cx = gx, cy = gy;
+  while (!(cx == sx && cy == sy)) {
+    rev_cells.push_back({cx, cy});
+    int ci = idx(cx, cy, width);
+    auto [px, py] = came_from[ci];
+    cx = px; cy = py;
   }
-  std::reverse(grid_path.begin(), grid_path.end());
+  rev_cells.push_back({sx, sy});
+  std::reverse(rev_cells.begin(), rev_cells.end());
 
-  // convert grid indices to world poses
-  std::vector<std::pair<int,int>> cells;
-  cells.reserve(grid_path.size());
-  for (int index_val : grid_path) {
-    int x = index_val % width;
-    int y = index_val / width;
-    cells.emplace_back(x, y);
-  }
-
-  // smoothing: try to shortcut using line-of-sight
-  std::vector<std::pair<int,int>> smooth;
-  size_t i = 0;
-  while (i < cells.size()) {
-    size_t j = cells.size() - 1;
-    // greedily find farthest j >= i such that LOS(i,j) is clear
-    for (; j > i; --j) {
-      if (lineOfSight(inflated, cells[i].first, cells[i].second,
-                      cells[j].first, cells[j].second, width, height, map)) {
-        break;
-      }
-    }
-    smooth.push_back(cells[i]);
-    i = j;
-    if (i == cells.size() - 1) {
-      smooth.push_back(cells.back());
-      break;
-    }
-  }
-
-  // convert to PoseStamped and push into path (world coordinates)
-  for (const auto &c : smooth) {
-    geometry_msgs::msg::PoseStamped ps;
-    ps.header.frame_id = map.header.frame_id;
-    ps.header.stamp = rclcpp::Clock().now();
-    ps.pose.position.x = (c.first + 0.5) * resolution + map.info.origin.position.x;
-    ps.pose.position.y = (c.second + 0.5) * resolution + map.info.origin.position.y;
-    ps.pose.position.z = 0.0;
-    ps.pose.orientation.w = 1.0;
-    path.poses.push_back(ps);
+  for (auto [x,y] : rev_cells) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = path.header;
+    pose.pose.position.x = map.info.origin.position.x + (x + 0.5) * res;
+    pose.pose.position.y = map.info.origin.position.y + (y + 0.5) * res;
+    pose.pose.orientation.w = 1.0;
+    path.poses.push_back(pose);
   }
 
   return path;

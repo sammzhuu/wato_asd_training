@@ -54,7 +54,7 @@ void PlannerNode::timerCallback() {
 bool PlannerNode::goalReached() {
   double dx = goal_.point.x - robot_pose_.position.x;
   double dy = goal_.point.y - robot_pose_.position.y;
-  return std::sqrt(dx * dx + dy * dy) < 2;  // 2 m tolerance
+  return std::sqrt(dx * dx + dy * dy) < 0.5;  // 0.5 m tolerance
 }
 
 void PlannerNode::planPath() {
