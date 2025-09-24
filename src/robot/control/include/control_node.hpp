@@ -41,6 +41,9 @@ private:
     double linear_speed_;
     double linear_kp_;
     double angular_kp_;
+    double min_linear_speed_;
+    double max_angular_speed_;
+    double slowdown_radius_;
 };
 
 #endif // CONTROL_NODE_HPP_

@@ -1,3 +1,4 @@
+#include "control_node.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -13,10 +14,13 @@ public:
     ControlNode() : Node("pure_pursuit_controller") {
         // Parameters (tunable via ROS2 params)
         lookahead_distance_ = this->declare_parameter("lookahead_distance", 1.0);
-        goal_tolerance_     = this->declare_parameter("goal_tolerance", 0.1);
+        goal_tolerance_     = this->declare_parameter("goal_tolerance", 0.05);
         linear_speed_       = this->declare_parameter("linear_speed", 0.5);
         linear_kp_          = this->declare_parameter("linear_kp", 0.5);
         angular_kp_         = this->declare_parameter("angular_kp", 1.0);
+        min_linear_speed_   = 0.05;   // ensure we still inch forward
+        max_angular_speed_  = 1.0;    // rad/s clamp
+        slowdown_radius_    = 0.5;    // start slowing before final
 
         // Subscribers
         path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
@@ -71,51 +75,94 @@ private:
         cmd_vel_pub_->publish(cmd_vel);
     }
 
-    std::optional<geometry_msgs::msg::PoseStamped> findLookaheadPoint() {
-        for (auto &pose : current_path_->poses) {
-            double distance = computeDistance(
-                robot_odom_->pose.pose.position, pose.pose.position);
-            if (distance >= lookahead_distance_) {
-                return pose;
-            }
-        }
+    std::optional<geometry_msgs::msg::PoseStamped> ControlNode::findLookaheadPoint() {
+    if (!current_path_ || current_path_->poses.empty() || !robot_odom_) {
         return std::nullopt;
     }
 
-    geometry_msgs::msg::Twist computeVelocity(const geometry_msgs::msg::PoseStamped &target) {
+    // first try to find a point >= lookahead_distance_
+    for (const auto &pose : current_path_->poses) {
+        double distance = computeDistance(robot_odom_->pose.pose.position, pose.pose.position);
+        if (distance >= lookahead_distance_) {
+            return pose;
+        }
+    }
+
+    // If none found, FALL BACK to the final waypoint (important!)
+        return current_path_->poses.back();
+    }
+
+    // --- computeVelocity ---
+    geometry_msgs::msg::Twist ControlNode::computeVelocity(const geometry_msgs::msg::PoseStamped &target) {
         geometry_msgs::msg::Twist cmd_vel;
 
         // Current robot pose
         auto robot_pose = robot_odom_->pose.pose;
-        double robot_x = robot_pose.position.x;
-        double robot_y = robot_pose.position.y;
-        double robot_yaw = extractYaw(robot_pose.orientation);
+        double rx = robot_pose.position.x;
+        double ry = robot_pose.position.y;
+        double ryaw = extractYaw(robot_pose.orientation);
 
-        // Target
+        // Target pose
         double tx = target.pose.position.x;
         double ty = target.pose.position.y;
 
         // Vector to target
-        double dx = tx - robot_x;
-        double dy = ty - robot_y;
+        double dx = tx - rx;
+        double dy = ty - ry;
         double target_yaw = std::atan2(dy, dx);
 
-        // Heading error
-        double yaw_error = target_yaw - robot_yaw;
-        while (yaw_error > M_PI) yaw_error -= 2 * M_PI;
-        while (yaw_error < -M_PI) yaw_error += 2 * M_PI;
+        // Yaw error normalized
+        double yaw_error = target_yaw - ryaw;
+        while (yaw_error > M_PI)  yaw_error -= 2.0 * M_PI;
+        while (yaw_error < -M_PI) yaw_error += 2.0 * M_PI;
 
-        // Distance to target
-        double dist = std::sqrt(dx * dx + dy * dy);
+        // Distances
+        double dist_to_target = std::hypot(dx, dy);
+        double dist_to_goal   = computeDistance(robot_pose.position, current_path_->poses.back().pose.position);
 
-        // --- Control law ---
-        // Linear speed decreases as we approach goal
-        double goal_dist = computeDistance(robot_pose.position, current_path_->poses.back().pose.position);
-        cmd_vel.linear.x = std::min(linear_speed_, linear_kp_ * goal_dist);
+        // If final goal reached (center within tolerance) -> zero velocities
+        if (dist_to_goal <= goal_tolerance_) {
+            return cmd_vel; // zeros
+        }
 
-        // Angular speed proportional to yaw error
-        cmd_vel.angular.z = angular_kp_ * yaw_error;
+        // Linear: proportional to distance *to the chosen target* (not to some other goal)
+        double linear_cmd = linear_kp_ * dist_to_target;
 
+        // When close to the final goal, apply extra slowdown factor (smooth arrival)
+        if (dist_to_goal < slowdown_radius_) {
+            // scale down based on how close to final
+            double scale = std::max(0.0, dist_to_goal / slowdown_radius_);
+            linear_cmd *= scale;
+        }
+
+        // clamp and enforce minimum so we actually close the last bit
+        linear_cmd = std::min(linear_cmd, linear_speed_);
+        if (linear_cmd < min_linear_speed_ && dist_to_target > goal_tolerance_) {
+            // allow a small nudge forward if we're not yet inside goal tolerance
+            linear_cmd = min_linear_speed_;
+        }
+
+        // Angular: proportional but clamped
+        double angular_cmd = angular_kp_ * yaw_error;
+        if (angular_cmd > max_angular_speed_) angular_cmd = max_angular_speed_;
+        if (angular_cmd < -max_angular_speed_) angular_cmd = -max_angular_speed_;
+
+        // If the target is the final waypoint, reduce angular command to avoid spinning in place
+        if (target.pose.position.x == current_path_->poses.back().pose.position.x &&
+            target.pose.position.y == current_path_->poses.back().pose.position.y) {
+            // allow small heading correction but don't rotate aggressively
+            angular_cmd *= 0.5;
+        }
+
+        // If yaw error is large, consider reducing linear speed (optional safety)
+        const double yaw_threshold = 0.7; // radians (~40°)
+        if (std::fabs(yaw_error) > yaw_threshold) {
+            // reduce forward speed while making a large turn
+            linear_cmd *= 0.4;
+        }
+
+        cmd_vel.linear.x  = linear_cmd;
+        cmd_vel.angular.z = angular_cmd;
         return cmd_vel;
     }
 
@@ -148,6 +195,9 @@ private:
     double linear_speed_;
     double linear_kp_;
     double angular_kp_;
+    double min_linear_speed_;
+    double max_angular_speed_;
+    double slowdown_radius_;
 };
 
 int main(int argc, char **argv) {
